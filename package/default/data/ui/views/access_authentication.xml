@@ -1,0 +1,135 @@
+<form version="1.1">
+  <label>Access authentication</label>
+  <fieldset submitButton="true" autoRun="true">
+    <input type="time" token="time">
+      <label>Time</label>
+      <default>
+        <earliest>-24h@h</earliest>
+        <latest>now</latest>
+      </default>
+    </input>
+    <input type="text" token="index">
+      <label>Index</label>
+      <default>*</default>
+    </input>
+    <input type="text" token="username">
+      <label>Username</label>
+      <default>*</default>
+    </input>
+    <input type="dropdown" token="status">
+      <label>Status</label>
+      <choice value="*">All</choice>
+      <choice value="Allowed">Allowed</choice>
+      <choice value="Denied">Denied</choice>
+      <choice value="Unknown">Unknown</choice>
+      <default>*</default>
+    </input>
+    <input type="text" token="ip_address">
+      <label>IP address</label>
+      <default>*</default>
+    </input>
+  </fieldset>
+  <search id="authentications">
+    <query><![CDATA[
+index=$index|s$ sourcetype="cloudflare:access:auth"
+| fields _time ray_id user_email allowed ip_address app_domain
+| eval ray_id=nullif(ray_id, "")
+| dedup ray_id keepempty=true
+| eval username=coalesce(user_email, "(unknown)"),
+       status=case(allowed="true" OR allowed="1", "Allowed", allowed="false" OR allowed="0", "Denied", true(), "Unknown"),
+       ip_address=coalesce(ip_address, "(unknown)"),
+       app_domain=coalesce(app_domain, "(unknown)")
+| search username=$username|s$ status=$status|s$ ip_address=$ip_address|s$
+| bin _time span=5m
+| stats count AS events BY _time username status ip_address app_domain
+    ]]></query>
+    <earliest>$time.earliest$</earliest>
+    <latest>$time.latest$</latest>
+  </search>
+  <search id="summary" base="authentications">
+    <query>stats sum(events) AS total sum(eval(if(status="Allowed", events, 0))) AS allowed sum(eval(if(status="Denied", events, 0))) AS denied dc(eval(if(username!="(unknown)", username, null()))) AS users | fillnull value=0 total allowed denied users</query>
+  </search>
+  <row>
+    <panel>
+      <single>
+        <title>Authentications</title>
+        <search base="summary">
+          <query>fields total</query>
+        </search>
+        <option name="drilldown">none</option>
+      </single>
+    </panel>
+    <panel>
+      <single>
+        <title>Allowed</title>
+        <search base="summary">
+          <query>fields allowed</query>
+        </search>
+        <option name="drilldown">none</option>
+      </single>
+    </panel>
+    <panel>
+      <single>
+        <title>Denied</title>
+        <search base="summary">
+          <query>fields denied</query>
+        </search>
+        <option name="drilldown">none</option>
+      </single>
+    </panel>
+    <panel>
+      <single>
+        <title>Users</title>
+        <search base="summary">
+          <query>fields users</query>
+        </search>
+        <option name="drilldown">none</option>
+      </single>
+    </panel>
+  </row>
+  <row>
+    <panel>
+      <chart>
+        <title>Authentications over time</title>
+        <search base="authentications">
+          <query>timechart span=5m sum(events) BY status useother=false</query>
+        </search>
+        <option name="charting.chart">area</option>
+        <option name="charting.chart.stackMode">stacked</option>
+        <option name="charting.drilldown">none</option>
+      </chart>
+    </panel>
+    <panel>
+      <chart>
+        <title>Authentication status</title>
+        <search base="authentications">
+          <query>stats sum(events) AS Authentications BY status</query>
+        </search>
+        <option name="charting.chart">pie</option>
+        <option name="charting.drilldown">none</option>
+      </chart>
+    </panel>
+  </row>
+  <row>
+    <panel>
+      <table>
+        <title>Top users</title>
+        <search base="authentications">
+          <query>stats sum(events) AS Authentications sum(eval(if(status="Denied", events, 0))) AS Denied BY username | eval "Denied (%)"=round(100*Denied/Authentications, 1) | sort 20 - Authentications</query>
+        </search>
+        <option name="count">20</option>
+        <option name="drilldown">none</option>
+      </table>
+    </panel>
+    <panel>
+      <table>
+        <title>Top IP addresses</title>
+        <search base="authentications">
+          <query>stats sum(events) AS Authentications sum(eval(if(status="Denied", events, 0))) AS Denied BY ip_address | sort 20 - Authentications</query>
+        </search>
+        <option name="count">20</option>
+        <option name="drilldown">none</option>
+      </table>
+    </panel>
+  </row>
+</form>

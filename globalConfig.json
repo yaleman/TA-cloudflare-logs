@@ -1,0 +1,250 @@
+{
+    "pages": {
+        "configuration": {
+            "tabs": [
+                {
+                    "name": "account",
+                    "table": {
+                        "actions": [
+                            "edit",
+                            "delete",
+                            "clone"
+                        ],
+                        "header": [
+                            {
+                                "label": "Name",
+                                "field": "name"
+                            },
+                            {
+                                "label": "Account ID",
+                                "field": "account_id"
+                            }
+                        ]
+                    },
+                    "entity": [
+                        {
+                            "type": "text",
+                            "label": "Name",
+                            "validators": [
+                                {
+                                    "type": "regex",
+                                    "errorMsg": "Account Name must begin with a letter and consist exclusively of alphanumeric characters and underscores.",
+                                    "pattern": "^[a-zA-Z]\\w*$"
+                                },
+                                {
+                                    "type": "string",
+                                    "errorMsg": "Length of input name should be between 1 and 100",
+                                    "minLength": 1,
+                                    "maxLength": 100
+                                }
+                            ],
+                            "field": "name",
+                            "help": "A unique name for the account.",
+                            "required": true
+                        },
+                        {
+                            "type": "text",
+                            "label": "Cloudflare account ID",
+                            "field": "account_id",
+                            "required": true,
+                            "validators": [
+                                {
+                                    "type": "regex",
+                                    "pattern": "^[a-fA-F0-9]{32}$",
+                                    "errorMsg": "Enter the 32-character hexadecimal Cloudflare account ID."
+                                }
+                            ]
+                        },
+                        {
+                            "type": "text",
+                            "label": "API token",
+                            "field": "api_token",
+                            "required": true,
+                            "encrypted": true,
+                            "help": "Account-scoped token with Access: Audit Logs Read permission.",
+                            "validators": [
+                                {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 4096,
+                                    "errorMsg": "Enter an API token from 1 to 4096 characters."
+                                }
+                            ]
+                        }
+                    ],
+                    "title": "Accounts"
+                },
+                {
+                    "type": "loggingTab"
+                }
+            ],
+            "title": "Configuration"
+        },
+        "inputs": {
+            "services": [
+                {
+                    "name": "cloudflare_access_auth",
+                    "entity": [
+                        {
+                            "type": "text",
+                            "label": "Name",
+                            "validators": [
+                                {
+                                    "type": "regex",
+                                    "errorMsg": "Input Name must begin with a letter and consist exclusively of alphanumeric characters and underscores.",
+                                    "pattern": "^[a-zA-Z]\\w*$"
+                                },
+                                {
+                                    "type": "string",
+                                    "errorMsg": "Length of input name should be between 1 and 100",
+                                    "minLength": 1,
+                                    "maxLength": 100
+                                }
+                            ],
+                            "field": "name",
+                            "help": "A unique name for the data input.",
+                            "required": true
+                        },
+                        {
+                            "type": "interval",
+                            "label": "Interval",
+                            "defaultValue": "300",
+                            "field": "interval",
+                            "options": {
+                                "range": [
+                                    60,
+                                    86400
+                                ]
+                            },
+                            "help": "Time interval of the data input, in seconds.",
+                            "required": true
+                        },
+                        {
+                            "type": "index",
+                            "field": "index",
+                            "label": "Index",
+                            "defaultValue": "default",
+                            "required": true
+                        },
+                        {
+                            "type": "singleSelect",
+                            "label": "Account to use",
+                            "options": {
+                                "referenceName": "account"
+                            },
+                            "help": "Account to use for this input.",
+                            "field": "account",
+                            "required": true,
+                            "validators": [
+                                {
+                                    "type": "string",
+                                    "errorMsg": "Length of account name should be between 1 and 100",
+                                    "minLength": 1,
+                                    "maxLength": 100
+                                }
+                            ]
+                        },
+                        {
+                            "type": "text",
+                            "label": "Initial lookback (seconds)",
+                            "field": "initial_lookback",
+                            "defaultValue": "3600",
+                            "help": "Used only before a checkpoint exists. Blank uses 3600; 0 starts at the current time. Keep within Cloudflare retention.",
+                            "validators": [
+                                {
+                                    "type": "number",
+                                    "range": [
+                                        0,
+                                        2592000
+                                    ],
+                                    "isInteger": true,
+                                    "errorMsg": "Use an integer from 0 to 2592000."
+                                }
+                            ]
+                        },
+                        {
+                            "type": "text",
+                            "label": "Records per page",
+                            "field": "per_page",
+                            "defaultValue": "100",
+                            "required": true,
+                            "validators": [
+                                {
+                                    "type": "number",
+                                    "range": [
+                                        1,
+                                        1000
+                                    ],
+                                    "isInteger": true,
+                                    "errorMsg": "Use an integer from 1 to 1000."
+                                }
+                            ]
+                        }
+                    ],
+                    "inputHelperModule": "cloudflare_access_auth_helper",
+                    "title": "Access authentication logs",
+                    "disableNewInput": true
+                }
+            ],
+            "title": "Inputs",
+            "table": {
+                "actions": [
+                    "edit",
+                    "delete",
+                    "clone"
+                ],
+                "header": [
+                    {
+                        "label": "Name",
+                        "field": "name"
+                    },
+                    {
+                        "label": "Interval",
+                        "field": "interval"
+                    },
+                    {
+                        "label": "Index",
+                        "field": "index"
+                    },
+                    {
+                        "label": "Status",
+                        "field": "disabled"
+                    }
+                ],
+                "moreInfo": [
+                    {
+                        "label": "Name",
+                        "field": "name"
+                    },
+                    {
+                        "label": "Interval",
+                        "field": "interval"
+                    },
+                    {
+                        "label": "Index",
+                        "field": "index"
+                    },
+                    {
+                        "label": "Status",
+                        "field": "disabled",
+                        "mapping": {
+                            "true": "Inactive",
+                            "false": "Active"
+                        }
+                    }
+                ]
+            }
+        }
+    },
+    "meta": {
+        "name": "TA_cloudflare_logs",
+        "restRoot": "TA_cloudflare_logs",
+        "version": "0.1.0",
+        "displayName": "Cloudflare Access API Logs",
+        "schemaVersion": "0.0.10",
+        "supportedThemes": [
+            "light",
+            "dark"
+        ]
+    }
+}

@@ -1,0 +1,15 @@
+name: ta-cloudflare-logs-live
+services:
+  splunk:
+    image: splunk/splunk:9.3
+    platform: linux/amd64
+    restart: "no"
+    environment:
+      SPLUNK_START_ARGS: --accept-license
+      SPLUNK_GENERAL_TERMS: --accept-sgt-current-at-splunk-com
+      SPLUNK_PASSWORD: ${SPLUNK_PASSWORD:?Run app_test.py --init first}
+    ports:
+      - "127.0.0.1:18090:8089"
+      - "127.0.0.1:18001:8000"
+    volumes:
+      - ./TA_cloudflare_logs-0.1.0.tar.gz:/tmp/TA_cloudflare_logs.tar.gz:ro

@@ -1,0 +1,67 @@
+name: Release package
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - name: Install locked dependencies
+        run: uv sync --locked
+      - name: Test and lint
+        run: |
+          uv run pytest -q
+          uv run ruff check package/bin tests scripts
+      - name: Build package
+        run: uv run python scripts/build.py
+      - name: Read package identity
+        id: package
+        run: |
+          uv run python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          meta = json.loads(Path("globalConfig.json").read_text())["meta"]
+          archive = Path(f"{meta['name']}-{meta['version']}.tar.gz")
+          if not archive.is_file():
+              raise SystemExit(f"Package not found: {archive}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"tag=v{meta['version']}\n")
+              output.write(f"archive={archive}\n")
+          PY
+      - name: Create or update versioned release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ steps.package.outputs.tag }}
+          RELEASE_ARCHIVE: ${{ steps.package.outputs.archive }}
+        run: |
+          # Do not let an older queued build replace a newer main release.
+          main_sha=$(git ls-remote origin refs/heads/main | cut -f1)
+          if [[ "$main_sha" != "$GITHUB_SHA" ]]; then
+            echo "Skipping release because main has a newer commit."
+            exit 0
+          fi
+          git tag --force "$RELEASE_TAG" "$GITHUB_SHA"
+          git push --force origin "refs/tags/$RELEASE_TAG"
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --verify-tag --title "$RELEASE_TAG" \
+              --notes "Splunk add-on package built automatically from main."
+          fi
+          gh release upload "$RELEASE_TAG" "$RELEASE_ARCHIVE" --clobber
