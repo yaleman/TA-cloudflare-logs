@@ -386,7 +386,7 @@ def test_preflight_filters_api_records_outside_requested_window(
     api = Mock()
     api.page.side_effect = [[older, future] + ([valid] if has_valid_record else []), []]
     monkeypatch.setattr(live, "CloudflareClient", Mock(return_value=api))
-    config = live.Config("password", "a" * 32, "api-token", lookback=86400)
+    config = live.Config("password", "a" * 32, "api-token", lookback=3600)
     if has_valid_record:
         since, expected = live.expected_events(config)
         assert since == live.parse_time("2026-10-06T00:00:00Z")

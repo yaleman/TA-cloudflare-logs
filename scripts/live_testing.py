@@ -594,8 +594,7 @@ def cli():
         parser.error(
             "--lookback requires --test and must be between 60 and 2591940 seconds"
         )
-    if args.timeout < 30:
-        args.timeout = 30
+    args.timeout = max(args.timeout, 30)
     if (args.init and any((args.install, args.test, args.cleanup))) or (
         args.cleanup and (args.install or args.test)
     ):
