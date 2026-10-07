@@ -48,7 +48,7 @@ uv run python scripts/build.py
 
 - Add focused regressions for collection or harness behavior changes. For dashboard changes, parse the XML and verify that the packaged dashboard and navigation match the source. Documentation-only changes need consistency checks, not new tests.
 - Report unit tests, package generation, installation checks, live ingestion, and AppInspect certification separately. A successful build or install does not prove live collection.
-- Use `app_test.py --init`, `--install`, `--test`, and `--cleanup` for the dedicated Compose workflow. Inspect the existing container and context before operating on a local instance; preserve its data when upgrading.
+- Use `mise run app:init`, `mise run app:install`, `mise run app:test`, and `mise run app:cleanup` for the dedicated Compose workflow. Inspect the existing container and context before operating on a local instance; preserve its data when upgrading.
 - The Compose project is `ta-cloudflare-logs-live`, with Web on `127.0.0.1:18001` and management on `127.0.0.1:18090`. Do not target another Splunk instance or discard its volumes without explicit authorization.
 - Keep `.live/config.json` ignored and mode `0600`. Never print credentials, pass them in command arguments, overwrite existing credential files, or expose Docker environment contents.
 - The self-signed certificate exception belongs only to the dedicated loopback test API. Keep production Cloudflare certificate verification enabled.

@@ -24,7 +24,7 @@ SOURCETYPE = "cloudflare:access:auth"
 
 def validate_parameters(parameters):
     integer_option(parameters.get("interval"), 300, 60, 86400)
-    integer_option(parameters.get("initial_lookback"), 3600, 0, 2592000)
+    integer_option(parameters.get("initial_lookback"), 86400, 0, 2592000)
     integer_option(parameters.get("per_page"), 100, 1, 1000)
     if not parameters.get("account") or not parameters.get("index"):
         raise ValueError("Account and index are required")
@@ -85,7 +85,7 @@ def stream_events(inputs, event_writer):
                     continue
                 if checkpoint is None:
                     lookback = integer_option(
-                        parameters.get("initial_lookback"), 3600, 0, 2592000
+                        parameters.get("initial_lookback"), 86400, 0, 2592000
                     )
                     checkpoint = Checkpoint(until - timedelta(seconds=lookback))
                     store.save(checkpoint)

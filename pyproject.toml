@@ -1,24 +1,27 @@
 [project]
 name = "ta-cloudflare-logs"
 version = "0.1.0"
-requires-python = ">=3.9"
+requires-python = ">=3.9,<=3.10"
 dependencies = [
     "requests==2.32.5",
-    "solnlib>=6.3",
+    "solnlib>=6.3,<8.0",
     "splunk-sdk>=2,<3",
     "splunktaucclib>=8.2,<9",
 ]
 
 [dependency-groups]
 dev = [
+    "docker>=7.2.0",
     "pip>=26.0.1",
     "pytest>=8.4.2",
+    "pyyaml>=6.0.3",
     "ruff>=0.16.10",
     "splunk-add-on-ucc-framework==6.6.0",
+    "ty>=0.0.85",
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["./test"]
 
-[tool.ruff.lint]
-select = ["E4", "E7", "E9", "F", "B"]
+[tool.ty.environment]
+extra-paths = ["package/bin"]

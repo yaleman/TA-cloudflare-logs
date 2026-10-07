@@ -4,7 +4,6 @@ from unittest.mock import Mock
 
 import pytest
 import requests
-
 from cloudflare_access import (
     Checkpoint,
     CloudflareClient,
@@ -235,7 +234,7 @@ def test_retry_exhaustion():
 
 
 def test_long_retry_after_defers_to_next_scheduled_poll():
-    api, session, sleep = client([response(429, headers={"Retry-After": "600"})])
+    api, _session, sleep = client([response(429, headers={"Retry-After": "600"})])
     with pytest.raises(CollectionError) as failure:
         api.page(START, END, 1, 100)
     assert failure.value.kind is ErrorKind.RATE_LIMIT
@@ -310,12 +309,12 @@ def test_failed_atomic_replace_preserves_previous_checkpoint(tmp_path, monkeypat
 @pytest.mark.parametrize("value", ["oops", "-1", "1.5", "2592001", True])
 def test_invalid_lookback(value):
     with pytest.raises(CollectionError) as failure:
-        integer_option(value, 3600, 0, 2592000)
+        integer_option(value, 86400, 0, 2592000)
     assert failure.value.kind is ErrorKind.CONFIGURATION
 
 
 def test_config_and_empty_checkpoint():
-    assert integer_option("", 3600, 0, 2592000) == 3600
+    assert integer_option("", 86400, 0, 2592000) == 86400
     assert validate_account({"account_id": "a" * 32, "api_token": "token"}) == (
         "a" * 32,
         "token",

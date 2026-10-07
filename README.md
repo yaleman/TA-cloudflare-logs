@@ -4,7 +4,7 @@ A UCC-generated Splunk add-on that polls Cloudflare Zero Trust Access **authenti
 
 ## Install and configure
 
-1. Install `TA_cloudflare_logs-0.1.0.tar.gz` using Splunk's **Apps → Manage Apps → Install app from file**. Restart if Splunk requests it.
+1. Install `TA_cloudflare_logs-<version>.tar.gz` using Splunk's **Apps → Manage Apps → Install app from file**. Restart if Splunk requests it.
 2. Open **Cloudflare Access API Logs → Configuration → Accounts**. Add a name, your 32-character Cloudflare account ID, and an account-scoped API token with **Access: Audit Logs Read** permission.
 3. Under **Inputs**, create an **Access authentication logs** input, select the account and destination index, and save. New inputs start disabled. Enable it using the status control in the input table.
 4. Open **Access authentication** from the app navigation. Choose a time range, index, username (Cloudflare `user_email`), status, and IP address, then submit. Text filters accept `*` wildcards; `*` includes all values.
@@ -19,7 +19,7 @@ The account UI uses UCC's `encrypted` field handling and Splunk credential stora
 | Setting | Default | Allowed values |
 | --- | --- | --- |
 | Interval | 300 seconds | 60–86400 seconds |
-| Initial lookback | 3600 seconds | Blank = 3600; 0–2592000 seconds |
+| Initial lookback | 86400 seconds | Blank = 86400 (24 hours); 0–2592000 seconds |
 | Index | Splunk default index | Select an existing destination index |
 | Records per page | 100 | 1–1000 |
 | New input status | Disabled | Enable/disable from Inputs |
@@ -45,10 +45,7 @@ Source lives in `package/`; UCC's generated output is disposable. Edit `globalCo
 With [uv](https://docs.astral.sh/uv/) installed, run from the project root:
 
 ```sh
-uv sync --locked
-uv run pytest -q
-uv run ruff check package/bin tests scripts
-uv run python scripts/build.py
+mise build
 ```
 
 The build exports locked runtime dependencies, creates the pure-Python Splunk SDK wheel, and asks UCC 6.6.0 to install portable wheels targeting Python 3.9 before generating UI, REST handlers, configuration, and the modular-input entry point. The packaged archive is created in the project root and ignored by Git. GitHub Actions runs tests, lint, and packaging on every push to `main`, then creates or updates the `v<version>` release using `meta.version` in `globalConfig.json`. Repeated pushes with the same version move that release tag to the built commit and replace its package asset; a version bump creates a new release. Generated runtime dependencies include only pure Python wheels; no platform-specific `.so` libraries are shipped. When changing dependencies, use `uv add`/`uv remove` and regenerate `package/lib/requirements.txt` with `uv export --no-dev --no-hashes --no-emit-project --output-file package/lib/requirements.txt`.
@@ -57,34 +54,33 @@ Tests cover fixed-window pagination, timestamp boundaries, deduplication, checkp
 
 ## Automated local Splunk install and live test
 
-The Docker workflow follows the local-test pattern in TA-pushover. It uses a dedicated Compose project, Splunk 9.3 on `linux/amd64`, and loopback-only ports: Splunk Web at `http://127.0.0.1:18001` and the management API at `https://127.0.0.1:18090`. It does not use or modify another Splunk instance. Starting the container accepts Splunk's license terms through the image's documented startup flags.
+The Docker workflow follows the local-test pattern in TA-pushover. The harness uses the Docker Python SDK with settings from `docker-compose.yml`; existing containers are reused to preserve their data. It uses a dedicated Compose project, Splunk 9.3 on `linux/amd64`, and loopback-only ports: Splunk Web at `http://127.0.0.1:18001` and the management API at `https://127.0.0.1:18090`. It does not use or modify another Splunk instance. Starting the container accepts Splunk's license terms through the image's documented startup flags.
 
 From the project root, prepare and install:
 
 ```sh
-uv sync --locked
-uv run python scripts/build.py
-uv run python app_test.py --init
-uv run python app_test.py --install
+mise run build
+mise run app:init
+mise run app:install
+
 ```
 
-`--init` creates `.live/config.json` with a random Splunk admin password and blank `account_id`/`api_token` fields. This file is ignored by Git and must have mode `0600`. Initialization refuses to overwrite an existing file. The install command starts the dedicated container, waits for its API, installs/upgrades the package through Splunk's management API, restarts the container, and checks the package version and UCC endpoints. It also creates temporary placeholder credentials and a disabled input to exercise encrypted storage and input creation, then deletes them. Cloudflare credentials are unnecessary for installation.
+`app:init` creates `.live/config.json` with a random Splunk admin password and blank `account_id`/`api_token` fields. This file is ignored by Git and must have mode `0600`. Initialization refuses to overwrite an existing file. The install command starts the dedicated container, waits for its API, installs/upgrades the package through Splunk's management API, restarts the container, and checks the package version and UCC endpoints. It also creates temporary placeholder credentials and a disabled input to exercise encrypted storage and input creation, then deletes them. Cloudflare credentials are unnecessary for installation.
 
 When ready, fill the `account_id` and `api_token` fields in `.live/config.json` locally. Use an account-scoped Cloudflare token with **Access: Audit Logs Read**. Keep credentials out of chat, shell arguments and source control. Then run:
 
 ```sh
-uv run python app_test.py --test
+mise run app:test
 ```
 
 The live test first reads a fixed window of real Cloudflare authentication records. It then creates or updates the test account through UCC's encrypted credential handler, checks that the underlying configuration contains only the secret placeholder, creates the dedicated test index if necessary, and enables a 60-second input. For a new checkpoint, its initial lookback covers the saved preflight window, time spent preparing the test, and at least one extra hour for collector startup (or the configured timeout if longer). The full padded window must fit within the collector’s 30-day lookback limit. It searches specifically for up to 100 reference ray IDs and collapses identical raw events before limiting results, then checks structurally identical JSON and collector completion without collection errors. Existing account/input names with incompatible account or destination settings are rejected. The test disables its input after success or failure; account credentials, indexed events, and checkpoints remain available for inspection. It never creates a Cloudflare login or modifies Cloudflare configuration.
 
-A successful installation is separate from a successful live ingestion test. If no usable authentication records are available within `lookback` (default 3600 seconds), the live test exits with code 2; it does not report success. Authenticate to a protected Access application or choose a suitable lookback inside your account's retention, then rerun. Other failures return code 1. Successful checks return code 0. `--timeout` controls the readiness/ingestion wait (default 600 seconds). Use `--test --lookback 86400` to test a 24-hour window without editing the credential file; the collector still resumes an existing checkpoint.
+A successful installation is separate from a successful live ingestion test. If the reference window has no usable authentication events, the test exits before configuring the account or input. Retry with `uv run python app_test.py --test --lookback 86400` to check the past 24 hours; the input is still disabled afterward. If no usable authentication records are available within `lookback` (default 86400 seconds), the live test exits with code 2; it does not report success. Authenticate to a protected Access application or choose a suitable lookback inside your account's retention, then rerun. Other failures return code 1. Successful checks return code 0. `--timeout` controls the readiness/ingestion wait (default 600 seconds). Use `--test --lookback 86400` to test a 24-hour window without editing the credential file; the collector still resumes an existing checkpoint.
 
 To rebuild, reinstall and test in one run after credentials are configured:
 
 ```sh
-uv run python scripts/build.py
-uv run python app_test.py --install --test
+mise run app:install_test
 ```
 
 The harness uses HTTPS with the dedicated loopback container's self-signed certificate exception; production Cloudflare certificate verification remains enabled. Secrets are passed to Docker through its environment and to APIs in request bodies/headers, never printed or included in command arguments. Docker administrators can inspect the container's startup password.
@@ -92,7 +88,7 @@ The harness uses HTTPS with the dedicated loopback container's self-signed certi
 Remove only this workflow's container and network when finished:
 
 ```sh
-uv run python app_test.py --cleanup
+mise run app:cleanup
 ```
 
 Cleanup discards the container's installed app, credentials, checkpoints, and indexed events. The ignored local credential file remains. Do not change its Splunk password while a container exists; remove the container and recreate it if changing the startup password. Docker must be running and able to mount the project directory.

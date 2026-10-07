@@ -9,8 +9,12 @@ import pytest
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "live_testing.py"
 spec = importlib.util.spec_from_file_location("live_testing", MODULE_PATH)
+if spec is None:
+    raise ImportError("Could not load live_testing module")
 live = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = live
+if spec.loader is None:
+    raise ImportError("Could not load live_testing module")
 spec.loader.exec_module(live)
 
 
@@ -143,7 +147,7 @@ def test_live_test_covers_slow_setup_and_filters_reference_ids(monkeypatch, time
     lookback = int(splunk.upsert.call_args.args[2]["initial_lookback"])
     # Even a collector starting an hour after setup still covers the oldest record.
     assert setup_finished + timedelta(hours=1) - timedelta(seconds=lookback) <= since
-    assert lookback >= 10800 + max(3600, timeout)
+    assert lookback >= 10800 + max(86400, timeout)
     query, earliest = splunk.search.call_args_list[0].args
     filter_args = query.split("| where in(ray_id, ", 1)[1].split(") |", 1)[0]
     assert json.loads("[" + filter_args + "]") == list(expected)
@@ -182,12 +186,115 @@ def test_cloudflare_preflight_failure_does_not_change_splunk(monkeypatch):
     assert splunk.method_calls == []
 
 
-def test_docker_password_is_environment_only(monkeypatch):
-    run = Mock(return_value=Mock(returncode=0))
-    monkeypatch.setattr(live.subprocess, "run", run)
-    live.docker(live.Config("secret-password"), "up", "-d", "splunk")
-    assert "secret-password" not in str(run.call_args.args)
-    assert run.call_args.kwargs["env"]["SPLUNK_PASSWORD"] == "secret-password"
+@pytest.fixture
+def docker_client(monkeypatch):
+    client = Mock()
+    client.containers.list.return_value = []
+    client.networks.get.side_effect = live.NotFound("missing")
+    client.networks.create.return_value.name = "ta-cloudflare-logs-live_default"
+    monkeypatch.setattr(live.docker_sdk, "from_env", Mock(return_value=client))
+    return client
+
+
+def owned_container():
+    container = Mock()
+    container.labels = {
+        live.PROJECT_LABEL: live.DOCKER_PROJECT,
+        live.SERVICE_LABEL: "splunk",
+    }
+    return container
+
+
+def test_docker_creates_loopback_container_with_private_environment(
+    docker_client, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(live, "ROOT", tmp_path)
+    (tmp_path / "docker-compose.yml").write_text(
+        (MODULE_PATH.parents[1] / "docker-compose.yml").read_text()
+    )
+    (tmp_path / "TA_cloudflare_logs-0.1.0.tar.gz").touch()
+    live.docker(live.Config("secret-password"), live.DockerAction.START)
+    values = docker_client.containers.run.call_args.kwargs
+    assert values["environment"]["SPLUNK_PASSWORD"] == "secret-password"
+    assert values["ports"] == {
+        "8089/tcp": ("127.0.0.1", 18090),
+        "8000/tcp": ("127.0.0.1", 18001),
+    }
+    assert values["platform"] == "linux/amd64"
+    assert values["mounts"][0]["ReadOnly"] is True
+    assert values["mounts"][0]["Source"] == str(
+        tmp_path / "TA_cloudflare_logs-0.1.0.tar.gz"
+    )
+    assert values["use_config_proxy"] is False
+    docker_client.close.assert_called_once()
+
+
+def test_docker_reuses_existing_container_without_recreating_data(docker_client):
+    container = owned_container()
+    docker_client.containers.list.return_value = [container]
+    live.docker(live.Config("secret-password"), live.DockerAction.START)
+    container.start.assert_called_once()
+    docker_client.containers.run.assert_not_called()
+    docker_client.images.pull.assert_not_called()
+    container.remove.assert_not_called()
+
+
+def test_docker_restart_preserves_existing_container(docker_client):
+    container = owned_container()
+    docker_client.containers.list.return_value = [container]
+    live.docker(live.Config("secret-password"), live.DockerAction.RESTART)
+    container.restart.assert_called_once_with(timeout=30)
+    container.remove.assert_not_called()
+
+
+def test_docker_cleanup_removes_only_owned_resources(docker_client):
+    container = owned_container()
+    network = Mock(attrs={"Labels": {live.PROJECT_LABEL: live.DOCKER_PROJECT}})
+    docker_client.containers.list.return_value = [container]
+    docker_client.networks.get.side_effect = None
+    docker_client.networks.get.return_value = network
+    live.docker(live.Config("secret-password"), live.DockerAction.CLEANUP)
+    container.stop.assert_called_once_with(timeout=30)
+    container.remove.assert_called_once_with()
+    network.remove.assert_called_once_with()
+    assert docker_client.containers.list.call_args.kwargs == {
+        "all": True,
+        "filters": {"label": ["com.docker.compose.project=ta-cloudflare-logs-live"]},
+    }
+
+
+def test_docker_cleanup_refuses_foreign_network_before_removing_container(
+    docker_client,
+):
+    container = owned_container()
+    network = Mock(attrs={"Labels": {}})
+    docker_client.containers.list.return_value = [container]
+    docker_client.networks.get.side_effect = None
+    docker_client.networks.get.return_value = network
+    with pytest.raises(live.TestFailure) as failure:
+        live.docker(live.Config("secret-password"), live.DockerAction.CLEANUP)
+    assert failure.value.kind is live.FailureKind.COLLISION
+    container.stop.assert_not_called()
+    network.remove.assert_not_called()
+    docker_client.close.assert_called_once()
+
+
+def test_docker_failure_suppresses_sdk_diagnostics(docker_client):
+    docker_client.containers.list.side_effect = live.docker_sdk.errors.APIError(
+        "secret-password"
+    )
+    with pytest.raises(live.TestFailure) as failure:
+        live.docker(live.Config("secret-password"), live.DockerAction.START)
+    assert failure.value.kind is live.FailureKind.DOCKER
+    assert "secret-password" not in str(failure.value)
+    assert failure.value.__suppress_context__
+    docker_client.close.assert_called_once()
+
+
+def test_docker_cleanup_without_existing_resources_is_safe(docker_client):
+    live.docker(live.Config("secret-password"), live.DockerAction.CLEANUP)
+    docker_client.containers.run.assert_not_called()
+    docker_client.networks.create.assert_not_called()
 
 
 def test_search_api_errors_are_not_successful_results():
@@ -279,7 +386,7 @@ def test_preflight_filters_api_records_outside_requested_window(
     api = Mock()
     api.page.side_effect = [[older, future] + ([valid] if has_valid_record else []), []]
     monkeypatch.setattr(live, "CloudflareClient", Mock(return_value=api))
-    config = live.Config("password", "a" * 32, "api-token", lookback=3600)
+    config = live.Config("password", "a" * 32, "api-token", lookback=86400)
     if has_valid_record:
         since, expected = live.expected_events(config)
         assert since == live.parse_time("2026-10-06T00:00:00Z")
@@ -291,7 +398,7 @@ def test_preflight_filters_api_records_outside_requested_window(
 
 
 def test_cli_lookback_override_leaves_loaded_config_unchanged(monkeypatch):
-    original = live.Config("password")
+    original = live.Config("password", lookback=86400)
     monkeypatch.setattr(
         live.sys, "argv", ["app_test.py", "--test", "--lookback", "86400"]
     )
@@ -302,5 +409,54 @@ def test_cli_lookback_override_leaves_loaded_config_unchanged(monkeypatch):
     monkeypatch.setattr(live, "live_test", check)
     assert live.cli() == 0
     assert check.call_args.args[0].lookback == 86400
-    assert original.lookback == 3600
+    assert original.lookback == 86400
+    splunk.close.assert_called_once()
+
+
+@pytest.mark.parametrize("count", [1, 2])
+def test_docker_refuses_unexpected_project_containers(docker_client, count):
+    containers = [owned_container() for _ in range(count)]
+    if count == 1:
+        containers[0].labels[live.SERVICE_LABEL] = "other"
+    docker_client.containers.list.return_value = containers
+    with pytest.raises(live.TestFailure) as failure:
+        live.docker(live.Config("secret-password"), live.DockerAction.CLEANUP)
+    assert failure.value.kind is live.FailureKind.COLLISION
+    for container in containers:
+        container.stop.assert_not_called()
+        container.remove.assert_not_called()
+
+
+def test_docker_rejects_non_loopback_ports_before_creating_resources(
+    docker_client, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(live, "ROOT", tmp_path)
+    definition = (MODULE_PATH.parents[1] / "docker-compose.yml").read_text()
+    (tmp_path / "docker-compose.yml").write_text(
+        definition.replace("127.0.0.1", "0.0.0.0")
+    )
+    with pytest.raises(live.TestFailure) as failure:
+        live.docker(live.Config("secret-password"), live.DockerAction.START)
+    assert failure.value.kind is live.FailureKind.CONFIGURATION
+    docker_client.networks.create.assert_not_called()
+    docker_client.containers.run.assert_not_called()
+
+
+def test_cli_no_reference_events_explains_skipped_configuration(monkeypatch, capsys):
+    monkeypatch.setattr(live.sys, "argv", ["app_test.py", "--test"])
+    monkeypatch.setattr(live, "load_config", Mock(return_value=live.Config("password")))
+    splunk = Mock()
+    monkeypatch.setattr(live, "Splunk", Mock(return_value=splunk))
+    monkeypatch.setattr(
+        live,
+        "expected_events",
+        Mock(side_effect=live.TestFailure(live.FailureKind.NO_DATA)),
+    )
+    assert live.cli() == 2
+    message = capsys.readouterr().err
+    assert "Splunk configuration was not changed" in message
+    assert "--test --lookback 86400" in message
+    assert "password" not in message
+    splunk.upsert.assert_not_called()
+    splunk.request.assert_not_called()
     splunk.close.assert_called_once()

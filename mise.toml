@@ -1,0 +1,50 @@
+[tools]
+jq = "latest"
+python = "3.9"
+uv = "latest"
+
+[tasks.check]
+depends = ["ruff", "ty", "pytest"]
+
+[tasks.uv-sync]
+run = "uv sync --upgrade"
+
+[tasks.fmt]
+depends = ["uv-sync"]
+run = "uv run ruff format"
+
+[tasks.ruff]
+depends = ["fmt", "uv-sync"]
+run = "uv run ruff check"
+
+[tasks.ty]
+depends = ["fmt", "uv-sync"]
+run = "uv run ty check"
+
+[tasks.pytest]
+depends = ["fmt", "uv-sync"]
+run = "uv run pytest"
+
+[tasks.build]
+depends = ["check"]
+run = "uv run scripts/build.py"
+
+[tasks."app:init"]
+depends = ["uv-sync"]
+run = "uv run app_test.py --init"
+
+[tasks."app:install"]
+depends = ["uv-sync", "build"]
+run = "uv run app_test.py --install"
+
+[tasks."app:test"]
+depends = ["uv-sync", "build"]
+run = "uv run app_test.py --test"
+
+[tasks."app:install_test"]
+depends = ["uv-sync"]
+run = [{ task = "app:install" }, { task = "app:test" }]
+
+[tasks."app:cleanup"]
+depends = ["uv-sync"]
+run = "uv run app_test.py --cleanup"

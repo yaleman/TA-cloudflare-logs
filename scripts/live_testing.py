@@ -6,7 +6,6 @@ import math
 import os
 import re
 import secrets
-import subprocess
 import sys
 import time
 from dataclasses import dataclass, replace
@@ -15,11 +14,15 @@ from enum import Enum
 from pathlib import Path
 from urllib.parse import quote
 
+import docker as docker_sdk
 import requests
+import yaml
+from docker.errors import DockerException, NotFound
+from docker.types import Mount
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "package" / "bin"))
-from cloudflare_access import (  # noqa: E402
+from cloudflare_access import (
     CloudflareClient,
     CollectionError,
     parse_time,
@@ -63,12 +66,14 @@ class Config:
     account_name: str = "cloudflare_live"
     input_name: str = "cloudflare_live"
     index: str = "cloudflare_access_live"
-    lookback: int = 3600
+    lookback: int = 86400
 
 
 def initialize(path):
     if path.exists():
-        raise TestFailure(FailureKind.CONFIGURATION)
+        raise TestFailure(
+            FailureKind.CONFIGURATION, status="Config file already exists"
+        )
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     data = {
         "password": "CfLive-" + secrets.token_urlsafe(24),
@@ -77,7 +82,7 @@ def initialize(path):
         "account_name": "cloudflare_live",
         "input_name": "cloudflare_live",
         "index": "cloudflare_access_live",
-        "lookback": 3600,
+        "lookback": 86400,
     }
     with path.open("x", encoding="utf-8") as handle:
         os.chmod(path, 0o600)
@@ -104,31 +109,103 @@ def load_config(path):
         raise TestFailure(FailureKind.CONFIGURATION) from None
 
 
-def docker(config, *arguments):
-    environment = dict(os.environ, SPLUNK_PASSWORD=config.password)
+class DockerAction(Enum):
+    START = "start"
+    RESTART = "restart"
+    CLEANUP = "cleanup"
+
+
+DOCKER_PROJECT = "ta-cloudflare-logs-live"
+PROJECT_LABEL = "com.docker.compose.project"
+SERVICE_LABEL = "com.docker.compose.service"
+
+
+def docker(config, action):
+    client = None
     try:
-        result = subprocess.run(
-            [
-                "docker",
-                "compose",
-                "--project-name",
-                "ta-cloudflare-logs-live",
-                "--file",
-                str(ROOT / "docker-compose.yml"),
-                *arguments,
-            ],
-            cwd=ROOT,
-            env=environment,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=180,
+        client = docker_sdk.from_env(timeout=180)
+        containers = client.containers.list(
+            all=True,
+            filters={"label": [f"{PROJECT_LABEL}={DOCKER_PROJECT}"]},
         )
-    except (OSError, subprocess.TimeoutExpired):
+        if len(containers) > 1 or any(
+            container.labels.get(SERVICE_LABEL) != "splunk" for container in containers
+        ):
+            raise TestFailure(FailureKind.COLLISION)
+        container = containers[0] if containers else None
+        try:
+            network = client.networks.get(DOCKER_PROJECT + "_default")
+        except NotFound:
+            network = None
+        if (
+            network is not None
+            and (network.attrs.get("Labels") or {}).get(PROJECT_LABEL) != DOCKER_PROJECT
+        ):
+            raise TestFailure(FailureKind.COLLISION)
+        if action is DockerAction.CLEANUP:
+            if container is not None:
+                container.stop(timeout=30)
+                container.remove()
+            if network is not None:
+                network.remove()
+        elif action is DockerAction.RESTART:
+            if container is None:
+                raise TestFailure(FailureKind.DOCKER)
+            container.restart(timeout=30)
+        elif action is DockerAction.START:
+            if container is not None:
+                # Reuse the writable layer and anonymous volumes of existing installs.
+                container.start()
+                return
+            definition = yaml.safe_load(
+                (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+            )
+            service = definition["services"]["splunk"]
+            environment = dict(service["environment"])
+            environment["SPLUNK_PASSWORD"] = config.password
+            ports = {}
+            for binding in service["ports"]:
+                host, external, internal = binding.split(":")
+                if host != "127.0.0.1":
+                    raise TestFailure(FailureKind.CONFIGURATION)
+                ports[internal + "/tcp"] = (host, int(external))
+            mounts = []
+            for binding in service["volumes"]:
+                source, target, mode = binding.split(":")
+                source = (ROOT / source).resolve()
+                if not source.is_file() or mode != "ro":
+                    raise TestFailure(FailureKind.CONFIGURATION)
+                mounts.append(Mount(target, str(source), type="bind", read_only=True))
+            client.images.pull(service["image"], platform=service["platform"])
+            if network is None:
+                network = client.networks.create(
+                    DOCKER_PROJECT + "_default",
+                    labels={
+                        PROJECT_LABEL: DOCKER_PROJECT,
+                        "com.docker.compose.network": "default",
+                    },
+                )
+            client.containers.run(
+                service["image"],
+                name=DOCKER_PROJECT + "-splunk-1",
+                detach=True,
+                platform=service["platform"],
+                environment=environment,
+                ports=ports,
+                mounts=mounts,
+                network=network.name,
+                labels={PROJECT_LABEL: DOCKER_PROJECT, SERVICE_LABEL: "splunk"},
+                restart_policy={"Name": "no"},
+                use_config_proxy=False,
+            )
+    except (DockerException, requests.RequestException, OSError):
+        # SDK diagnostics can contain container configuration, including credentials.
         raise TestFailure(FailureKind.DOCKER) from None
-    if result.returncode:
-        # Docker's diagnostic output may contain its container environment.
-        raise TestFailure(FailureKind.DOCKER)
+    except (yaml.YAMLError, KeyError, TypeError, ValueError):
+        raise TestFailure(FailureKind.CONFIGURATION) from None
+    finally:
+        if client is not None:
+            client.close()
 
 
 class Splunk:
@@ -242,7 +319,7 @@ def entry_content(result):
     try:
         content = result["entry"][0]["content"]
         if not isinstance(content, dict):
-            raise ValueError
+            raise TypeError("Content is not a dictionary")
         return content
     except (KeyError, IndexError, TypeError, ValueError):
         raise TestFailure(FailureKind.RESPONSE) from None
@@ -255,7 +332,7 @@ def install(config, splunk, timeout):
     print(
         "Starting dedicated Docker Splunk; waiting for its management API", flush=True
     )
-    docker(config, "up", "-d", "splunk")
+    docker(config, DockerAction.START)
     splunk.wait(timeout)
     splunk.request(
         "POST",
@@ -267,7 +344,7 @@ def install(config, splunk, timeout):
         },
     )
     print("Package installed; restarting the test container", flush=True)
-    docker(config, "restart", "splunk")
+    docker(config, DockerAction.RESTART)
     splunk.wait(timeout)
     splunk.wait(timeout, ACCOUNT_ENDPOINT)
     splunk.wait(timeout, INPUT_ENDPOINT)
@@ -412,7 +489,7 @@ def live_test(config, splunk, timeout):
     # Cover time spent in preflight/setup plus a generous collector startup allowance.
     initial_lookback = math.ceil(
         (datetime.now(timezone.utc) - since).total_seconds()
-    ) + max(3600, timeout)
+    ) + max(86400, timeout)
     if not 0 <= initial_lookback <= 2592000:
         raise TestFailure(FailureKind.CONFIGURATION)
     splunk.upsert(
@@ -518,12 +595,9 @@ def cli():
             "--lookback requires --test and must be between 60 and 2591940 seconds"
         )
     if args.timeout < 30:
-        parser.error("Timeout must be at least 30 seconds")
-    if (
-        args.init
-        and any((args.install, args.test, args.cleanup))
-        or args.cleanup
-        and (args.install or args.test)
+        args.timeout = 30
+    if (args.init and any((args.install, args.test, args.cleanup))) or (
+        args.cleanup and (args.install or args.test)
     ):
         parser.error("Run --init and --cleanup separately from installation/testing")
     try:
@@ -537,7 +611,7 @@ def cli():
         if args.lookback is not None:
             config = replace(config, lookback=args.lookback)
         if args.cleanup:
-            docker(config, "down")
+            docker(config, DockerAction.CLEANUP)
             print(
                 "Dedicated test container and network removed; local credential file retained"
             )
@@ -555,11 +629,20 @@ def cli():
             splunk.close()
         return 0
     except TestFailure as error:
+        if error.kind is FailureKind.NO_DATA:
+            print(
+                "Live ingestion validation unavailable: no usable Cloudflare "
+                "authentication events in the reference window. Splunk configuration "
+                "was not changed. Retry with --test --lookback 86400 for a 24-hour "
+                "window, or a larger window within the 30-day limit.",
+                file=sys.stderr,
+            )
+            return 2
         print(
-            f"Workflow failed: kind={error.kind.value} status={error.status}",
+            f"Workflow failed: kind={error.kind.value} status={error.status} {error}",
             file=sys.stderr,
         )
-        return 2 if error.kind is FailureKind.NO_DATA else 1
+        return 1
     except CollectionError as error:
         print(
             f"Cloudflare API check failed: kind={error.kind.value} status={error.status}",

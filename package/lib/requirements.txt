@@ -18,7 +18,7 @@ pysocks==1.7.1
     # via splunktaucclib
 requests==2.32.5
     # via ta-cloudflare-logs
-solnlib==6.3.0
+solnlib==7.0.0
     # via
     #   splunktaucclib
     #   ta-cloudflare-logs

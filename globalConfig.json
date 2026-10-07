@@ -148,8 +148,8 @@
                             "type": "text",
                             "label": "Initial lookback (seconds)",
                             "field": "initial_lookback",
-                            "defaultValue": "3600",
-                            "help": "Used only before a checkpoint exists. Blank uses 3600; 0 starts at the current time. Keep within Cloudflare retention.",
+                            "defaultValue": "86400",
+                            "help": "Used only before a checkpoint exists. Blank uses 86400 (24 hours); 0 starts at the current time. Keep within Cloudflare retention.",
                             "validators": [
                                 {
                                     "type": "number",
@@ -240,7 +240,7 @@
         "name": "TA_cloudflare_logs",
         "restRoot": "TA_cloudflare_logs",
         "version": "0.1.0",
-        "displayName": "Cloudflare Access API Logs",
+        "displayName": "Cloudflare Logs",
         "schemaVersion": "0.0.10",
         "supportedThemes": [
             "light",

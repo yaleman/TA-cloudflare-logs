@@ -5,10 +5,8 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 from xml.etree import ElementTree
 
-import pytest
-from splunklib import modularinput as smi
-
 import cloudflare_access_auth_helper as helper
+import pytest
 from cloudflare_access import (
     Checkpoint,
     CollectionError,
@@ -16,6 +14,7 @@ from cloudflare_access import (
     FileState,
     parse_time,
 )
+from splunklib import modularinput as smi
 
 ACCOUNT_ID = "a" * 32
 STANZA = "cloudflare_access_auth://test"
@@ -38,7 +37,7 @@ def harness(tmp_path, monkeypatch):
         "index": "default",
         "interval": "300",
         "per_page": "100",
-        "initial_lookback": "3600",
+        "initial_lookback": "86400",
     }
     inputs = SimpleNamespace(
         inputs={STANZA: parameters},
@@ -76,12 +75,12 @@ def test_input_writes_one_json_event_and_uses_encrypted_account_realm(
     assert len(events) == 1
     event = events[0]
     assert event.attrib["stanza"] == STANZA
-    assert json.loads(event.findtext("data")) == original
+    assert json.loads(event.findtext("data") or "{}") == original
     assert event.findtext("sourcetype") == "cloudflare:access:auth"
     assert event.findtext("source") == f"cloudflare:access:auth:{ACCOUNT_ID}"
     assert event.findtext("index") == "default"
     assert (
-        float(event.findtext("time")) == parse_time(original["created_at"]).timestamp()
+        float(event.findtext("time")) == parse_time(original["created_at"]).timestamp()  # ty: ignore[invalid-argument-type]
     )
     assert (
         factory.call_args.kwargs["realm"]
@@ -162,7 +161,7 @@ def test_rate_limit_cooldown_is_persisted_without_advancing_timestamp(
 ):
     from datetime import datetime, timedelta, timezone
 
-    inputs, factory, directory = harness
+    inputs, _factory, directory = harness
     retry_at = datetime.now(timezone.utc) + timedelta(hours=1)
     collect = Mock(side_effect=CollectionError(ErrorKind.RATE_LIMIT, 429, retry_at))
     monkeypatch.setattr(helper, "poll", collect)

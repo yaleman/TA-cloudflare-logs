@@ -5,7 +5,11 @@ from unittest.mock import Mock
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "build.py"
 spec = importlib.util.spec_from_file_location("build", MODULE_PATH)
+if spec is None:
+    raise ImportError("Could not load build module")
 build = importlib.util.module_from_spec(spec)
+if spec.loader is None:
+    raise ImportError("Could not load build module")
 spec.loader.exec_module(build)
 
 
